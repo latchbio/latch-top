@@ -1,6 +1,7 @@
 import sys
 import time
-from typing import List, Union
+from typing import List, OrderedDict, Union
+from collections import OrderedDict
 import re
 
 errors: List[str] = []
@@ -9,11 +10,6 @@ try:
     import psutil
 except Exception as e:
     errors.append(f"{e}\nMissing required module psutil")
-
-try:
-    from tabulate import tabulate
-except Exception as e:
-    errors.append(f"{e}\nMissing required module tabulate")
 
 if "linux" not in sys.platform:
     errors.append("Unsupported platform!")
@@ -33,6 +29,60 @@ def si_unit(num: Union[int, float]) -> str:
     return f"{num:.1f}{unit}"
 
 
+class ProcessInfo:
+    def __init__(
+        self,
+        pid: int,
+        user: str,
+        res: int,
+        sys_time: float,
+        user_time: float,
+        command: str,
+    ) -> None:
+        self.pid: int = pid
+        self.user: str = user
+        self.res: int = res
+        self.previous_sys_time: float = sys_time  # TODO(rt): might temporarily see incorrect values for individual processes
+        self.previous_user_time: float = user_time
+        self.sys_time: float = sys_time
+        self.user_time: float = user_time
+        self.command: str = command
+        self.percent_cpu: float = 0.0
+        self.percent_mem: float = 0.0
+
+    def update_stats(
+        self,
+        new_sys_time: float,
+        new_user_time: float,
+        new_res: int,
+        memory_limit_bytes: int,
+        total_cpu_time: float,
+    ) -> None:
+        self.previous_sys_time = self.sys_time
+        self.previous_user_time = self.user_time
+        self.sys_time = new_sys_time
+        self.user_time = new_user_time
+        self.res = new_res
+        self.percent_cpu = (
+            (
+                self.sys_time
+                - self.previous_sys_time
+                + self.user_time
+                - self.previous_user_time
+            )
+            / total_cpu_time
+        ) * 100
+        self.percent_mem = (self.res / memory_limit_bytes) * 100
+
+    def __str__(self) -> str:
+        cpu_slice_minutes, remainder = divmod(self.user_time + self.sys_time, 60)
+        cpu_slice_seconds, cpu_slice_hundreths = divmod(remainder, 1)
+        cpu_slice_hundreths = int(cpu_slice_hundreths * 100)
+        cpu_slice_time = f"{int(cpu_slice_minutes)}:{int(cpu_slice_seconds):02d}.{cpu_slice_hundreths:02d}"  # format: M:SS.hh
+        body = f"{self.pid:5} {self.user:8} {si_unit(self.res):>6} {self.percent_mem:>5.1f} {self.percent_cpu:>5.1f} {cpu_slice_time:>10} {self.command:<20}"
+        return body
+
+
 class ProcessStats:
     def __init__(self) -> None:
         self.memory_limit_bytes: int = 0
@@ -44,6 +94,7 @@ class ProcessStats:
         self.total_user_time: float = 0.0
         self.timestamp: float = 0
         self.previous_timestamp: float = 0
+        self.processes: OrderedDict[int, ProcessInfo] = OrderedDict()
 
         try:
             with open("/sys/fs/cgroup/memory/memory.stat", "r") as file:
@@ -83,10 +134,28 @@ class ProcessStats:
             self.used_memory_bytes += mem_info.rss
             self.total_sys_time += cpu_times.system
             self.total_user_time += cpu_times.user
+            if not self.processes.get(process.pid):
+                self.processes[process.pid] = ProcessInfo(
+                    pid=process.pid,
+                    user=process.username()
+                    if len(process.username()) <= 8
+                    else process.username()[0:7] + "+",
+                    res=mem_info.rss,
+                    sys_time=cpu_times.system,
+                    user_time=cpu_times.user,
+                    command=process.name(),
+                )
+            else:
+                self.processes[process.pid].update_stats(
+                    cpu_times.system,
+                    cpu_times.user,
+                    mem_info.rss,
+                    self.memory_limit_bytes,
+                    self.timestamp - self.previous_timestamp,
+                )
 
-    def __str__(self) -> str:
+    def print(self) -> None:
         current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"Latch Top - {current_time}")
 
         total_memory_usage = self.used_memory_bytes + self.buff_cache_bytes
         memory_utilzation = (
@@ -102,20 +171,21 @@ class ProcessStats:
             - self.previous_total_user_time
         ) / (self.timestamp - self.previous_timestamp)
 
-        res = [
-            [
-                "Memory",
-                f"{memory_utilzation} ({memory_utilization_percentage:.1f}%)",
-            ],
-            [
-                "CPU",
-                f"{cpu_utilization_percentage:.1f}%",
-            ],
-        ]
-        headers = ["Resource", "Utilization"]
-        return tabulate(res, headers=headers, tablefmt="fancy_grid", stralign="center")
+        reverse_terminal_colors = "\033[7m"
+        default_terminal_colors = "\033[0m"
+        column_names = f"{reverse_terminal_colors}{'PID':>5} {'USER':<8} {'MEM':>6} {'%MEM':>5} {'%CPU':>5} {'RUNTIME':>10} {'COMMAND':<20}{default_terminal_colors}"
+        print(f"\nDate: {current_time}")
+        print(f"MEM: {memory_utilzation} ({memory_utilization_percentage:.1f}%)")
+        print(f"CPU: {cpu_utilization_percentage:.1f}% \n")
+        print(column_names)
+        for process in sorted(
+            self.processes.values(),
+            key=lambda x: (x.percent_mem, x.percent_cpu),
+            reverse=True,
+        ):
+            print(process)
 
 
 if __name__ == "__main__":
     process_stats = ProcessStats()
-    print(process_stats)
+    process_stats.print()
