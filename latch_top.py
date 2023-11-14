@@ -12,9 +12,9 @@ except Exception as e:
     errors.append(f"{e}\nMissing required module psutil")
 
 if "linux" not in sys.platform:
-    errors.append("Unsupported platform!")
+    errors.append(f"Unsupported platform: {sys.platform}. Only Linux is supported!")
 
-if errors:
+if len(errors) > 0:
     print("ERROR!")
     print("\n".join(errors))
     raise SystemExit(1)
@@ -24,9 +24,27 @@ def si_unit(num: Union[int, float]) -> str:
     num = float(num)
     for unit in ("B", "k", "M", "G", "T", "P", "E", "Z"):
         if abs(num) < 1000:
-            return f"{num:3.1f}{unit}"
+            break
         num /= 1000
     return f"{num:.1f}{unit}"
+
+
+def parse_memory_stat_content(
+    pattern: str, value_name: str, memory_stat_content: str
+) -> int:
+    match = re.search(pattern, memory_stat_content)
+    if match:
+        value = match.group(1)
+        try:
+            return int(value)
+        except ValueError:
+            print(
+                f"Error: unable to convert value of {value_name}, {value} to type int"
+            )
+            raise SystemExit(1)
+    else:
+        print(f'Error: "{value_name}" not found in "/sys/fs/cgroup/memory/memory.stat"')
+        raise SystemExit(1)
 
 
 class ProcessInfo:
@@ -96,24 +114,25 @@ class ProcessStats:
         self.previous_timestamp: float = 0
         self.processes: OrderedDict[int, ProcessInfo] = OrderedDict()
 
+        memory_stat_content = ""
         try:
             with open("/sys/fs/cgroup/memory/memory.stat", "r") as file:
                 memory_stat_content = file.read()
 
-            hierarchical_memory_limit_match = re.search(
-                r"hierarchical_memory_limit (\d+)", memory_stat_content
-            )
-            total_cache_match = re.search(r"total_cache (\d+)", memory_stat_content)
-
-            if hierarchical_memory_limit_match:
-                self.memory_limit_bytes = int(hierarchical_memory_limit_match.group(1))
-
-            if total_cache_match:
-                self.buff_cache_bytes = int(total_cache_match.group(1))
-
-        except (FileNotFoundError, ValueError) as e:
-            print(f"Error: {e}")
+        except FileNotFoundError:
+            print('Error: file "/sys/fs/cgroup/memory/memory.stat" not found')
             raise SystemExit(1)
+
+        self.memory_limit_bytes = parse_memory_stat_content(
+            pattern=r"hierarchical_memory_limit (\d+)",
+            value_name="hierarchical_memory_limit",
+            memory_stat_content=memory_stat_content,
+        )
+        self.buff_cache_bytes = parse_memory_stat_content(
+            pattern=r"total_cache (\d+)",
+            value_name="total_cache",
+            memory_stat_content=memory_stat_content,
+        )
 
         self.update()
         time.sleep(0.5)
