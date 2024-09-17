@@ -1,15 +1,9 @@
-[tool.poetry]
+[project]
 name = "latch-top"
 version = "0.1.0"
-description = ""
-authors = ["Ryan Teoh <ryan@latch.bio>"]
-readme = "README.md"
+description = "Latch top is a tool to show resource usage of processes in a latch pod"
+requires-python = ">=3.9"
+dependencies = []
 
-[tool.poetry.dependencies]
-python = "^3.9"
-psutil = "^5.9.6"
-
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[project.scripts]
+latch-top = "latch_top:main"
